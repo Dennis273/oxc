@@ -1411,7 +1411,20 @@ impl<'a> Visit<'a> for ExhaustiveDepsVisitor<'a, '_> {
         if let Ok(source) = analyze_property_chain(&it.object, self.semantic) {
             if let Some(source) = source {
                 if is_parent_call_expr {
-                    self.found_dependencies.insert(source);
+                    // For method calls like `obj.method()`, the dependency should be
+                    // `obj.method` (the full chain including the method name), not just `obj`.
+                    // This matches ESLint's react-hooks behavior where `[obj.method]` is
+                    // a valid dependency for `obj.method()` calls.
+                    let new_chain = Vec::from([Atom::from(it.property.name)]);
+                    let symbol_id =
+                        self.semantic.scoping().get_reference(source.reference_id).symbol_id();
+                    self.found_dependencies.insert(Dependency {
+                        name: source.name,
+                        reference_id: source.reference_id,
+                        span: source.span,
+                        chain: [source.chain, new_chain].concat(),
+                        symbol_id,
+                    });
                 } else {
                     let new_chain = Vec::from([Atom::from(it.property.name)]);
 
@@ -2773,6 +2786,53 @@ fn test() {
           }
         ",
         "function MyComponent4({ myRef }) { useCallback(() => { console.log(myRef.current); }, [myRef]); }",
+        // Member expression deps on local variables (not just props)
+        r"function MyComponent() {
+          const obj = someFunc();
+          useCallback(() => {
+            console.log(obj.prop);
+          }, [obj.prop]);
+        }",
+        r"function MyComponent() {
+          const obj = someFunc();
+          useEffect(() => {
+            console.log(obj.foo);
+            console.log(obj.bar);
+          }, [obj.foo, obj.bar]);
+        }",
+        r"function MyComponent(config) {
+          useCallback(() => {
+            console.log(config.value);
+          }, [config.value]);
+        }",
+        // Method calls with member expression deps
+        r"function MyComponent() {
+          const obj = someFunc();
+          useCallback(() => {
+            obj.method();
+          }, [obj.method]);
+        }",
+        r"function MyComponent() {
+          const obj = someFunc();
+          useCallback(() => {
+            obj.method();
+          }, [obj]);
+        }",
+        r"function MyComponent(props) {
+          useCallback(() => {
+            if (props.onChange) {
+              props.onChange();
+            }
+          }, [props.onChange]);
+        }",
+        r"function MyComponent(props) {
+          const [skillsCount] = useState();
+          useEffect(() => {
+            if (skillsCount === 0 && !props.isEditMode) {
+              props.toggleEditMode();
+            }
+          }, [skillsCount, props.isEditMode, props.toggleEditMode]);
+        }",
     ];
 
     let fail = vec![
@@ -3334,14 +3394,6 @@ fn test() {
               props.foo.onChange();
             }
           }, []);
-        }",
-        r"function MyComponent(props) {
-          const [skillsCount] = useState();
-          useEffect(() => {
-            if (skillsCount === 0 && !props.isEditMode) {
-              props.toggleEditMode();
-            }
-          }, [skillsCount, props.isEditMode, props.toggleEditMode]);
         }",
         r"function MyComponent(props) {
           const [skillsCount] = useState();
