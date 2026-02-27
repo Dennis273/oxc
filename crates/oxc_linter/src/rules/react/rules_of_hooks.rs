@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use oxc_ast::{
     AstKind,
-    ast::{ArrowFunctionExpression, Function},
+    ast::{ArrowFunctionExpression, Expression, Function},
 };
 use oxc_cfg::{
     ControlFlowGraph, EdgeType, ErrorEdgeKind, InstructionKind,
@@ -183,6 +183,12 @@ impl Rule for RulesOfHooks {
             return;
         }
 
+        // If the callee resolves to an async function definition, it's not a hook.
+        // Async functions can never be hooks (hooks must be synchronous).
+        if is_callee_async_function(call, ctx) {
+            return;
+        }
+
         let cfg = ctx.cfg();
 
         let span = call.span;
@@ -312,6 +318,25 @@ impl Rule for RulesOfHooks {
             #[expect(clippy::needless_return)]
             return ctx.diagnostic(diagnostics::conditional_hook(span, hook_name));
         }
+    }
+}
+
+/// Returns `true` if the callee of a call expression resolves to an async function definition.
+/// Async functions cannot be React hooks, so calls to them should not be checked.
+fn is_callee_async_function(call: &oxc_ast::ast::CallExpression, ctx: &LintContext) -> bool {
+    let Expression::Identifier(ident) = &call.callee else { return false };
+    let reference = ctx.scoping().get_reference(ident.reference_id());
+    let Some(symbol_id) = reference.symbol_id() else { return false };
+    let decl_node = ctx.semantic().symbol_declaration(symbol_id);
+    match decl_node.kind() {
+        AstKind::Function(func) => func.r#async,
+        // `const useApi = async () => { ... }` or `const useApi = async function() { ... }`
+        AstKind::VariableDeclarator(decl) => match &decl.init {
+            Some(Expression::ArrowFunctionExpression(arrow)) => arrow.r#async,
+            Some(Expression::FunctionExpression(func)) => func.r#async,
+            _ => false,
+        },
+        _ => false,
     }
 }
 
@@ -1081,7 +1106,30 @@ fn test() {
     r"const MyComponent = makeComponent(() => { useHook(); });",
     r"const MyComponent2 = makeComponent(function () { useHook(); });",
     r"const MyComponent4 = makeComponent(function InnerComponent() { useHook(); });",
-    r"const Foo = hoc((props) => { if (props.cond) { const [_a, _b] = useState(false); } });"
+    r"const Foo = hoc((props) => { if (props.cond) { const [_a, _b] = useState(false); } });",
+    // Valid: `useApi` is defined as async, so it's not a hook.
+    r"
+        async function useApi() { return { getData: () => 'data' }; }
+        const routes = {
+            fetchData: async () => {
+                const api = await useApi();
+            },
+        };
+    ",
+    // Valid: async arrow function is not a hook.
+    r"
+        const useApi = async () => { return { getData: () => 'data' }; };
+        const fetchData = async () => {
+            useApi();
+        };
+    ",
+    // Valid: async function called inside a component is not a hook.
+    r"
+        async function useFetch() { return await fetch('/api'); }
+        function Component() {
+            useFetch();
+        }
+    "
     ];
 
     let fail = vec![
