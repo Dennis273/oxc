@@ -1107,21 +1107,15 @@ fn test() {
     r"const MyComponent2 = makeComponent(function () { useHook(); });",
     r"const MyComponent4 = makeComponent(function InnerComponent() { useHook(); });",
     r"const Foo = hoc((props) => { if (props.cond) { const [_a, _b] = useState(false); } });",
-    // Valid: `useApi` is defined as async, so it's not a hook.
+    // Valid: async function declaration is not a hook.
     r"
-        async function useApi() { return { getData: () => 'data' }; }
-        const routes = {
-            fetchData: async () => {
-                const api = await useApi();
-            },
-        };
+        async function useApi() {}
+        async function fetchData() { await useApi(); }
     ",
     // Valid: async arrow function is not a hook.
     r"
-        const useApi = async () => { return { getData: () => 'data' }; };
-        const fetchData = async () => {
-            useApi();
-        };
+        const useApi = async () => {};
+        async function fetchData() { await useApi(); }
     "
     ];
 
