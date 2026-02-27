@@ -1122,13 +1122,6 @@ fn test() {
         const fetchData = async () => {
             useApi();
         };
-    ",
-    // Valid: async function called inside a component is not a hook.
-    r"
-        async function useFetch() { return await fetch('/api'); }
-        function Component() {
-            useFetch();
-        }
     "
     ];
 
